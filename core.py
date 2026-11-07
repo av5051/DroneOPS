@@ -196,6 +196,43 @@ def download_file(conn, remote, local, on_progress, cancel):
             pass
 
 
+def delete_remote(conn, remote, is_directory, on_progress=None, cancel=None):
+    """Permanently delete a remote file or recursively delete a remote directory."""
+    remote = str(remote)
+    normalized = remote.rstrip("/") or "/"
+    if normalized == "/" or any(part == ".." for part in normalized.split("/")):
+        raise ValueError("Refusing to delete a filesystem root or unsafe path")
+
+    sftp = conn.new_sftp()
+    try:
+        # Collect children before parents so directories are removed bottom-up.
+        paths = []
+
+        def collect(path, directory):
+            if cancel and cancel.is_set():
+                raise Cancelled()
+            if directory:
+                for attr in sftp.listdir_attr(path):
+                    child = path.rstrip("/") + "/" + attr.filename
+                    collect(child, is_dir(attr))
+            paths.append((path, directory))
+
+        collect(normalized, bool(is_directory))
+        total = len(paths)
+        for index, (path, directory) in enumerate(paths, 1):
+            if cancel and cancel.is_set():
+                raise Cancelled()
+            if directory:
+                sftp.rmdir(path)
+            else:
+                sftp.remove(path)
+            if on_progress:
+                on_progress(index / total if total else 1.0)
+        return f"Deleted {total} item(s)"
+    finally:
+        sftp.close()
+
+
 def walk_remote(conn, root):
     """Yield (remote_path, size) for every file under root."""
     sftp = conn.new_sftp()
